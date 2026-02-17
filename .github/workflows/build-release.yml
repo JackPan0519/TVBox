@@ -1,0 +1,167 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Specific upstream tag/branch (optional)'
+        required: false
+        default: ''
+  repository_dispatch:
+    types: [upstream_update]
+
+env:
+  UPSTREAM_REPO: takagen99/Box
+  UPSTREAM_BRANCH: main
+  BUILD_VARIANTS: "assembleArm64GenericNormalRelease assembleArmeabiGenericNormalRelease"
+  TZ: Asia/Shanghai
+
+jobs:
+  sync-and-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      upload_url: ${{ steps.release.outputs.upload_url }}
+      apk_count: ${{ steps.build.outputs.apk_count }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync upstream code
+        id: sync
+        run: |
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
+          git fetch upstream
+
+          UPSTREAM_COMMIT=$(git rev-parse upstream/${{ env.UPSTREAM_BRANCH }})
+          echo "UPSTREAM_COMMIT=$UPSTREAM_COMMIT" >> $GITHUB_ENV
+          echo "upstream_commit=$UPSTREAM_COMMIT" >> $GITHUB_OUTPUT
+
+          # 获取上游 commit 的提交信息
+          UPSTREAM_MSG=$(git log upstream/${{ env.UPSTREAM_BRANCH }} -1 --pretty=format:"%s")
+          echo "UPSTREAM_MSG=$UPSTREAM_MSG" >> $GITHUB_ENV
+
+          mv .github /tmp/.github_backup
+          rm -rf *
+          mv /tmp/.github_backup .github
+          git checkout upstream/${{ env.UPSTREAM_BRANCH }} -- .
+
+      - name: Generate version
+        id: version
+        run: |
+          VERSION="v$(TZ=Asia/Shanghai date +'%Y%m%d_%H%M')"
+          BUILD_TIME="$(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M:%S')"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "BUILD_TIME=$BUILD_TIME" >> $GITHUB_ENV
+          echo "build_time=$BUILD_TIME" >> $GITHUB_OUTPUT
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v2
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.8'
+
+      - name: Apply patches
+        run: |
+          python3 ${{ github.workspace }}/.github/scripts/patch_txtsubscribe.py
+          python3 ${{ github.workspace }}/.github/scripts/patch_liveplayactivity.py
+
+      - name: Create local.properties
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: Generate keystore
+        run: |
+          mkdir -p ~/.android
+          keytool -genkey -v -keystore ~/.android/debug.keystore \
+            -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Configure signing
+        run: python3 ${{ github.workspace }}/.github/scripts/configure_signing.py
+
+      - name: Build APKs
+        env:
+          BUILD_PYTHON: python
+        run: |
+          chmod +x gradlew
+          ./gradlew ${{ env.BUILD_VARIANTS }} --build-cache --parallel --daemon --warning-mode none
+
+      - name: Prepare APKs
+        id: build
+        run: |
+          mkdir -p ${{ github.workspace }}/apk/
+          VERSION=${{ env.VERSION }}
+
+          cd app/build/outputs/apk
+          for apk in $(find . -name "*.apk"); do
+            # 提取架构名称 (arm64-v8a 或 armeabi-v7a)
+            arch=$(echo "$apk" | grep -oP '(?<=/)[^/]+(?=/release)' || echo "unknown")
+            # 简化架构名称
+            if [[ "$arch" == *"arm64"* ]]; then
+              arch_name="arm64"
+            elif [[ "$arch" == *"armeabi"* ]]; then
+              arch_name="armeabi"
+            else
+              arch_name="$arch"
+            fi
+            NEW_NAME="TVBox_Patch_${arch_name}_${VERSION}.apk"
+            cp "$apk" "${{ github.workspace }}/apk/$NEW_NAME"
+          done
+
+          APK_COUNT=$(ls ${{ github.workspace }}/apk/*.apk 2>/dev/null | wc -l)
+          echo "apk_count=$APK_COUNT" >> $GITHUB_OUTPUT
+          ls -la ${{ github.workspace }}/apk/
+
+      - name: Create Release
+        id: release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: "${{ env.VERSION }} (${{ env.UPSTREAM_COMMIT }})"
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          body: |
+            ## 版本信息
+            - **版本号**: ${{ env.VERSION }}
+            - **上游 Commit**: [${{ env.UPSTREAM_COMMIT }}](https://github.com/${{ env.UPSTREAM_REPO }}/commit/${{ env.UPSTREAM_COMMIT }})
+            - **上游修改**: ${{ env.UPSTREAM_MSG }}
+            - **构建时间**: ${{ env.BUILD_TIME }} (北京时间)
+
+            ## 修改内容
+            - ✅ M3U Logo 支持 - 从 tvg-logo 字段提取并显示频道 Logo
+
+            ## 下载
+            | 文件名 | 架构 |
+            |--------|------|
+            | TVBox_Patch_arm64_${{ env.VERSION }}.apk | ARM64 (推荐) |
+            | TVBox_Patch_armeabi_${{ env.VERSION }}.apk | ARM32 |
+          files: |
+            ${{ github.workspace }}/apk/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "Build completed: ${{ env.VERSION }}"
+          echo "Upstream: ${{ env.UPSTREAM_COMMIT }}"
