@@ -56,4 +56,4 @@ content = content.replace(old_parse_m3u_body, new_parse_m3u_body)
 with open('app/src/main/java/com/github/tvbox/osc/util/live/TxtSubscribe.java', 'w', encoding='utf-8') as f:
     f.write(content)
 
-print("TxtSubscribe.java logo support added (simplified approach)")
+print("[001] M3U logo extract done")
