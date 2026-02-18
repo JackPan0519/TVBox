@@ -5,7 +5,10 @@ with open('app/src/main/java/com/github/tvbox/osc/ui/activity/LivePlayActivity.j
 
 old_code_1 = '''String[] epgInfo = EpgUtil.getEpgInfo(channelName);
         String epgTagName = channelName;
-        getTvLogo(channelName, epgInfo == null ? null : epgInfo[0]);'''
+        getTvLogo(channelName, epgInfo == null ? null : epgInfo[0]);
+        if (epgInfo != null && !epgInfo[1].isEmpty()) {
+            epgTagName = epgInfo[1];
+        }'''
 
 new_code_1 = '''String m3uLogo = TxtSubscribe.getChannelLogo(channelName);
         String logoUrl = null;
