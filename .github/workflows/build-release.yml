@@ -68,12 +68,28 @@ jobs:
       - name: Prepare APKs
         run: |
           mkdir -p ${{ github.workspace }}/apk/
+          echo "=== Debug: Listing all APK files ==="
+          find app/build/outputs/apk -name "*.apk" -type f
+          echo "=== Debug: APK directory structure ==="
+          ls -la app/build/outputs/apk/*/
+          
           cd app/build/outputs/apk
-          for apk in $(find . -name "*.apk"); do
-            arch=$(echo "$apk" | grep -oP '(?<=/)[^/]+(?=/release)' || echo "unknown")
-            [[ "$arch" == *"arm64"* ]] && arch_name="arm64" || [[ "$arch" == *"armeabi"* ]] && arch_name="armeabi" || arch_name="$arch"
+          for apk in $(find . -name "*.apk" -type f); do
+            echo "Processing: $apk"
+            # 从路径中提取架构名称
+            if [[ "$apk" == *"arm64"* ]]; then
+              arch_name="arm64"
+            elif [[ "$apk" == *"armeabi"* ]]; then
+              arch_name="armeabi"
+            else
+              arch_name="unknown"
+            fi
+            echo "Architecture: $arch_name"
             cp "$apk" "${{ github.workspace }}/apk/TVBox_Patch_${arch_name}_${{ env.VERSION }}.apk"
           done
+          
+          echo "=== Debug: Final APK files ==="
+          ls -la ${{ github.workspace }}/apk/
 
       - uses: softprops/action-gh-release@v1
         with:
